@@ -81,7 +81,7 @@ def check_domain_system(domain):
     return result
 
 # --- APP UI ---
-st.title("🌐 Bulk Domain Checker (System Mode)")
+st.title("🌐 Bulk Domain Checker By Bill")
 st.write("Using system `whois` for maximum accuracy.")
 
 # Check if whois is installed
