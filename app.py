@@ -135,7 +135,7 @@ if st.button("Check Domains") and domains_to_check:
             styled_df = df.style.map(color_registration, subset=['Registration'])
             table_placeholder.dataframe(styled_df, use_container_width=True)
         
-        time.sleep(0.5)
+        time.sleep(1.0)
 
     status_text.text("✅ Check Complete!")
     
