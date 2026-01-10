@@ -4,6 +4,7 @@ import requests
 import time
 import pandas as pd
 import shutil
+import random
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Domain Checker", page_icon="🌐")
@@ -11,7 +12,7 @@ st.set_page_config(page_title="Domain Checker", page_icon="🌐")
 # --- FUNCTIONS ---
 def check_domain_system(domain):
     """
-    Uses the system 'whois' command exactly like the Bash script.
+    Uses the system 'whois' command with a timeout to prevent hanging.
     """
     domain = domain.strip()
     if not domain:
@@ -23,7 +24,7 @@ def check_domain_system(domain):
         "Web Status": "N/A",
     }
 
-    # 1. Run System WHOIS (Exact same logic as your Bash script)
+    # 1. Run System WHOIS
     # We look for these specific "not found" phrases
     not_found_patterns = [
         "No match for", "NOT FOUND", "Not Registered", 
@@ -33,9 +34,14 @@ def check_domain_system(domain):
     is_registered = True
     
     try:
-        # Run the actual terminal command
-        # check=False ensures it doesn't crash Python if whois returns an error code
-        proc = subprocess.run(["whois", domain], capture_output=True, text=True)
+        # --- FIX: Timeout added (5 seconds) ---
+        # This prevents the app from freezing if the WHOIS server ignores us
+        proc = subprocess.run(
+            ["whois", domain], 
+            capture_output=True, 
+            text=True, 
+            timeout=5 
+        )
         output = proc.stdout + proc.stderr
         
         # Check if any "not found" pattern is in the output
@@ -49,6 +55,12 @@ def check_domain_system(domain):
         else:
             result["Registration"] = "UNREGISTERED"
             
+    except subprocess.TimeoutExpired:
+        # If the server "tarpits" (ignores) us, we mark it and move on
+        result["Registration"] = "TIMEOUT"
+        result["Web Status"] = "SKIPPED"
+        return result
+
     except FileNotFoundError:
         st.error("Error: 'whois' command not found. Are you on Mac/Linux?")
         return None
@@ -56,21 +68,21 @@ def check_domain_system(domain):
     # 2. Check HTTP (Web Status) - Only if registered
     if is_registered:
         try:
-            # We use a proper User-Agent so servers don't block the script
+            # Proper User-Agent to look like a browser
             headers = {'User-Agent': 'Mozilla/5.0 (compatible; DomainChecker/1.0)'}
             url = f"http://{domain}"
             
-            # This is the Python equivalent of 'curl -I -L'
-            response = requests.head(url, headers=headers, timeout=2, allow_redirects=True)
+            # Use HEAD first for speed
+            response = requests.head(url, headers=headers, timeout=3, allow_redirects=True)
             
             if 200 <= response.status_code < 400:
                 result["Web Status"] = f"ACTIVE ({response.status_code})"
             elif response.status_code >= 400:
                 result["Web Status"] = f"ERROR ({response.status_code})"
         except requests.RequestException:
-             # If HEAD fails, try GET once just in case (some servers block HEAD)
+            # Fallback to GET if HEAD fails
             try:
-                response = requests.get(url, headers=headers, timeout=2)
+                response = requests.get(url, headers=headers, timeout=3)
                 if 200 <= response.status_code < 400:
                     result["Web Status"] = f"ACTIVE ({response.status_code})"
                 else:
@@ -82,7 +94,7 @@ def check_domain_system(domain):
 
 # --- APP UI ---
 st.title("🌐 Bulk Domain Checker By Bill")
-st.write("Using system `whois` for maximum accuracy.")
+st.write("Using system `whois` with random delays and timeout protection.")
 
 # Check if whois is installed
 if not shutil.which("whois"):
@@ -105,40 +117,61 @@ elif input_method == "Upload File":
         string_data = uploaded_file.getvalue().decode("utf-8")
         domains_to_check = string_data.split('\n')
 
+# Clean the list
+clean_list = [d.strip() for d in domains_to_check if d.strip()]
+
+if clean_list:
+    st.info(f"Loaded {len(clean_list)} domains ready for checking.")
+
 # Run Button
-if st.button("Check Domains") and domains_to_check:
+if st.button("Start Checking"):
+    
+    # Note on Stopping
+    st.caption("ℹ️ To stop the process early, click the **Stop** button in the top-right corner of the browser window.")
+    
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     table_placeholder = st.empty()
     
-    clean_list = [d.strip() for d in domains_to_check if d.strip()]
     total = len(clean_list)
 
+    # DataFrame styling function
+    def color_registration(val):
+        if val == 'REGISTERED':
+            return 'color: #28a745; font-weight: bold' # Green
+        elif val == 'UNREGISTERED':
+            return 'color: #dc3545; font-weight: bold' # Red
+        elif val == 'TIMEOUT':
+            return 'color: #ffc107; font-weight: bold' # Orange
+        return ''
+
     for i, domain in enumerate(clean_list):
-        status_text.text(f"Checking: {domain}...")
+        status_text.text(f"Checking {i+1}/{total}: {domain}...")
         
+        # 1. Check the domain
         data = check_domain_system(domain)
         if data:
             results.append(data)
         
+        # 2. Update Progress
         progress_bar.progress((i + 1) / total)
         
-        # Real-time Table Update
-        df = pd.DataFrame(results)
+        # 3. Batch Update Table (Every 3 items to keep UI fast)
+        if (i + 1) % 3 == 0 or (i + 1) == total:
+            df = pd.DataFrame(results)
+            if not df.empty:
+                styled_df = df.style.map(color_registration, subset=['Registration'])
+                table_placeholder.dataframe(styled_df, use_container_width=True)
         
-        def color_registration(val):
-            color = 'green' if val == 'REGISTERED' else 'red'
-            return f'color: {color}; font-weight: bold'
-
-        if not df.empty:
-            styled_df = df.style.map(color_registration, subset=['Registration'])
-            table_placeholder.dataframe(styled_df, use_container_width=True)
-        
-        time.sleep(0.25)
+        # 4. Random Delay Strategy
+        # We wait between 1.5 and 3.5 seconds to vary the pattern
+        sleep_time = random.uniform(1.5, 3.5)
+        time.sleep(sleep_time)
 
     status_text.text("✅ Check Complete!")
     
+    # Final CSV Download
     if results:
         df_final = pd.DataFrame(results)
         csv = df_final.to_csv(index=False).encode('utf-8')
